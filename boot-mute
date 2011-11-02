@@ -1,0 +1,57 @@
+#!/usr/bin/perl
+
+# This program is meant to be installed as a launch daemon.
+# It saves audio mute/volume setting on shutdown, mutes audio,
+# and restores the setting on the next boot. This ensures no
+# BOING noise on the next boot.
+
+# We use apple script to get the audio muted status. Need to
+# force the interpreter to run in 32-bit mode in case CS4 is
+# installed to silence warnings about Adobe Unit Types.
+my $OSA = "/usr/bin/arch -i386 /usr/bin/osascript";
+
+# Save volume setting to /etc/boot-volume-muted, then mute.
+# Force exit, as this is the only place where we do so.
+sub shutdown
+{
+ system("$OSA -e 'output muted of (get volume settings)' > /etc/boot-volume-muted");
+ system("$OSA -e 'set volume with output muted'");
+ exit(0);
+}
+
+# Install shutdown() as SIGINT/SIGTERM handler so we'll save
+# audio status when launchd tells us to quit.
+$SIG{INT} = $SIG{TERM} = \&shutdown;
+
+# Restore volume mute setting on start-up.
+if (open(M, "< /etc/boot-volume-muted"))
+{
+  my $muted = <M>;
+  chomp($muted);
+  close(M);
+
+  system("$OSA -e 'set volume without output muted'");
+}
+
+# Do nothing as efficiently as possible. Just wait for signal.
+while (1) { sleep(86400); }
+
+# Install this with the following launch daemon:
+#
+# <?xml version="1.0" encoding="UTF-8"?>
+# <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN"
+#  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+# <plist version="1.0">
+# <dict>
+#   <key>Label</key>
+#   <string>fi.iki.lat.boot-mute</string>
+#   <key>Program</key>
+#   <string>/users/lat/bin/boot-mute</string>
+#   <key>KeepAlive</key>
+#   <true/>
+#   <key>RunAtLoad</key>
+#   <true/>
+#   <key>HopefullyExitsFirst</key>
+#   <true/>
+# </dict>
+# </plist>

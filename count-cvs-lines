@@ -1,0 +1,66 @@
+#!/bin/sh
+
+######################################################################
+# Initialise
+me=`echo $0 | sed 's%.*/%%'`
+
+######################################################################
+# Read arguments
+summarise=all
+reject='/\.admin|/ChangeLog|/domain'
+while [ $# -ge 1 ]; do
+  # If the previous option needs an argument, assign it
+  option="$1"; shift
+  case "$option" in
+    -*=*) argument=`echo "$option" | sed 's/[-_a-zA-Z0-9]*=//'` ;;
+    *)    argument= ;;
+  esac
+
+  case "$option" in
+    --reject )
+      [ -n "$1" ] || { echo "$me: error: missing argument to $option" 1>&2; exit 1; }
+      reject="$reject|$1"
+      shift ;;
+
+    --summarise )
+      [ -n "$1" ] || { echo "$me: error: missing argument to $option" 1>&2; exit 1; }
+      summarise="$1"
+      shift;;
+
+    -*)
+      echo "$me: Unrecognised option \`$option'." 1>&2
+      exit 1 ;;
+
+    *)
+      set -- "$option" ${1+"$@"}
+      break ;;
+  esac
+done
+
+case "$summarise" in
+ all | by-package | by-subsystem ) ;;
+ * ) echo "$me: error: unknown argument \`$summarise' to --summarise" 1>&2
+     exit 1 ;;
+esac
+
+cvs annotate ${1+"$@"} 2>&1 |
+ perl -e '
+   $do = 0; $rej = '"'$reject'"';
+   while (<STDIN>) {
+     if (m|^Annotations for (.*)|) {
+       $file = $1;
+       if ($rej ne "") {
+	 $do = ($file !~ m%$rej%);
+       }
+       $file =~ s|^([^/]+/[^/]+)/.*|$1|;
+     } elsif ($do && /^\d\S*\s+\((\S+)\s+\S+\):/) {
+       print "$file\t$1\n";
+     }
+   }' |
+ (case $summarise in
+    all ) cut -f2 ;;
+    by-subsystem ) sed 's|/[^	]*||' ;;
+    by-package ) cat ;;
+    * ) exit 2;;
+  esac) |
+ sort | uniq -c

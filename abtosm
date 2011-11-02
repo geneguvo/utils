@@ -1,0 +1,71 @@
+#!/usr/bin/env python
+
+import os, sys
+import sqlite3 as db
+sort_by_data = True
+
+# check we have the right number of arguments
+if len(sys.argv) != 2:
+  print >> sys.stderr, "usage: %s ADDRESS-BOOK-FILE" % sys.argv[0]
+  sys.exit(1)
+
+abfile = sys.argv[1]
+ab = db.connect(abfile)
+cur = ab.cursor()
+
+# Read main records. Use the "name" fields as a key for the record, as
+# the other fields (GUI, SQL keys) may vary from machine to machine.
+# But remember the SQL key to link back to the record.  While reading
+# the records classify them by type (person, group, ...).
+def read_records(cur):
+  keys = {}
+  records = {}
+  cur.execute("select * from ZABCDRECORD")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    if recdata['ZUNIQUEID'].find(":ABPerson") >= 0:
+      keyname = (recdata['ZLASTNAME'],
+                 recdata['ZFIRSTNAME'],
+                 recdata['ZORGANIZATION'])
+    elif recdata['ZUNIQUEID'].find(":ABGroup") >= 0 or \
+         recdata['ZUNIQUEID'].find(":ABSubscriptionRecord") >= 0 or \
+         recdata['ZUNIQUEID'].find(":ABInfo") >= 0:
+      continue
+    else:
+      print >> sys.stderr, "unrecognised record: %s" % recdata
+      sys.exit(1)
+
+    recs = records.setdefault(keyname, [])
+    rec = {'data': recdata, 'keyname': keyname, 'emails': []}
+    recs.append(rec)
+    keys[recdata['Z_PK']] = rec
+  return (records, keys)
+
+# Read the e-mail addresses.
+def read_emails(cur, reckeys):
+  cur.execute("select * from ZABCDEMAILADDRESS")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    parent = reckeys.get(recdata['ZOWNER'], None)
+    if not parent:
+      print >> sys.stderr, "no parent for record: %s" % recdata
+      sys.exit(1)
+    rec = { 'addr': recdata['ZADDRESS'],
+            'label': recdata['ZLABEL'].replace("_$!<", "").replace(">!$_", ""),
+            'primary': recdata['ZISPRIMARY'],
+            'index': recdata['ZORDERINGINDEX'],
+            'details': recdata }
+    parent['emails'].append(rec)
+
+(records, reckeys) = read_records(cur)
+read_emails(cur, reckeys)
+
+for key, rec in sorted(records.items()):
+  for r in rec:
+    if r['data']['ZFIRSTNAME'] or r['data']['ZLASTNAME']:
+      for i in sorted(r['emails'], lambda a, b: cmp(a['addr'], b['addr'])):
+	first = (r['data']['ZFIRSTNAME'] or "")
+	last  = (r['data']['ZLASTNAME'] or "")
+        print (u",%s,%s,%s," % (first, last, i['addr'])).encode('utf-8')

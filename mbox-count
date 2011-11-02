@@ -1,0 +1,98 @@
+#!/usr/bin/env perl
+
+BEGIN { $^W = 1 }; 
+
+######################################################################
+# Slurp a mbox file and split it into messages at envelope boundaries,
+# and each message into headers and the body.
+sub readmbox {
+  my ($file) = @_;
+  my (%hdrs, $body, @msgs) = ();
+  my $empty = 1;
+  my $inhdr = undef;
+  my $line = undef;
+  open(FILE, "< $file") || die "$file: cannot open: $!\n";
+  
+  my $fmt = <FILE>;
+  if (! $fmt) {
+    return @msgs;
+  } elsif ($fmt =~ /^From /) {
+    # unix format, do nothing, read again from start
+    seek(FILE, 0, 0);
+  } elsif ($fmt =~ /\*mbx\*/) {
+    # mbx format, convert
+    close(FILE);
+    open(FILE, "mbx2mbox $file |") || die "$file: cannot convert: $!\n";
+  } else {
+    die "$file: unrecognised file format\n";
+  }
+
+  while (<FILE>) {
+    chomp;
+    if ($empty && /^From\s+\S+\s+\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+/) {
+      # Start a new envelope, save previous message
+      if (scalar keys %hdrs) {
+	push(@msgs, { FILE => $file, LINE => $line,
+		      HEADERS => { %hdrs }, BODY => $body });
+      }
+
+      %hdrs = (($inhdr = 'from ') => [ $_ ]);
+      $body = "";
+      $line = $.;
+    } elsif ($inhdr && /^(\S+:)/) {
+      # Add a new header
+      push(@{$hdrs{$inhdr = lc($1)}}, $_);
+    } elsif (($inhdr && /^\s/)
+    	     || ($inhdr
+	         && $inhdr eq 'from '
+		 && /^>From /)) {
+      # Continue previous header
+      my $hdr = pop(@{$hdrs{$inhdr}});
+      $hdr .= " $_";
+      push(@{$hdrs{$inhdr}}, $hdr);
+    } elsif ($inhdr && /^$/) {
+      # Start body
+      $inhdr = undef;
+      $empty = 1;
+    } else {
+      # Append to body
+      die "$file: $.: can't be in headers ($inhdr)\n" if $inhdr;
+      $body .= "$_\n";
+      $body .= "\n";
+      $empty = /^$/;
+    }
+  }
+  close (FILE);
+
+  # Save last message
+  if (scalar keys %hdrs) {
+    push(@msgs, { FILE => $file, LINE => $line,
+                  HEADERS => { %hdrs }, BODY => $body });
+  }
+
+  return @msgs;
+}
+
+sub sortmbox {
+  my (@msgs) = @_;
+  my $mbox = {};
+  foreach my $msg (@msgs) {
+    my $msgid = $msg->{HEADERS}{"message-id:"} || $msg->{HEADERS}{'from '};
+    my $id = lc(join(" ", @$msgid));
+    $id =~ s/\s+/ /g;
+    if (exists $mbox->{$id}) {
+      warn "* duplicate <$id> ($msg->{FILE}:$msg->{LINE})\n";
+      next;
+    }
+    $msg->{ID} = $id;
+    $mbox->{$id} = $msg;
+  }
+  return $mbox;
+}
+
+sub countmbox {
+  my ($mbox) = @_;
+  print scalar keys %$mbox, "\n";
+}
+
+&countmbox (&sortmbox(&readmbox($ARGV[0])));

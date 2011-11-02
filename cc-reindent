@@ -1,0 +1,5 @@
+#!/bin/sh
+
+for f in ${1+"$@"}; do
+  (set -x; emacs -batch -u $USER "$f" -f cms-c-batch-indent)
+done

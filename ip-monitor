@@ -1,0 +1,83 @@
+#!/usr/bin/perl
+
+# This program is meant to be installed as a launch daemon.
+# It checks the system's IP addresses and network routing
+# every once in a while and reports it to a web server.
+# It's basically a tracking bug on the computer.
+my $TARGET = FIXME: HOSTNAME OF A WEB SERVER YOU CONTROL;
+my $NAME   = lc qx(hostname | sed 's/\.local\$//'); chomp($NAME);
+my $IFACES = "LC_ALL=C /sbin/ifconfig -a 2>/dev/null";
+my $ROUTE  = "LC_ALL=C /usr/sbin/traceroute -P icmp -a -q 1"
+             . " -n -w 2 -m 30 $TARGET 2>/dev/null";
+my $REPORT = "http://$TARGET/ip-monitor?name=$NAME";
+
+# Quit if we get SIGINT or SIGTERM.
+$SIG{INT} = $SIG{TERM} = sub { exit(0); };
+
+# Run forever. Every once in a while scan for all network
+# interfaces addresses and find a route to a known location.
+# Report all the info to a known web server.
+while (1)
+{
+  my %addrs;
+
+  if (open(IF, "$IFACES |"))
+  {
+    my $iface;
+    while (<IF>)
+    {
+      $iface = $1 if /^(\S+?):?\s/;
+      next unless defined $iface;
+      $addrs{$iface}{STATE} = uc($1) if /\b(up|down)\b/i;
+      $addrs{$iface}{IP} = $1 if /inet (\d+\.\d+\.\d+\.\d+)/i;
+      $addrs{$iface}{IP6} = $1 if /inet6 (\S+)/i;
+    }
+    close(IF);
+  }
+
+  my $addr = "";
+  foreach my $iface (sort { $a cmp $b } keys %addrs)
+  {
+    next if $iface =~ /^lo/;
+    my $ipv4 = $addrs{$iface}{IP} || "";
+    my $ipv6 = $addrs{$iface}{IP6} || "";
+    $addr .= "/$iface,$ipv4,$ipv6" if $ipv4 || $ipv6;
+  }
+
+  my $route = "";
+  if (open(RT, "$ROUTE |"))
+  {
+    while (<RT>)
+    {
+      if (/^\s*\d+\s+\[(\S+)\]\s+([\d.]+)\s+([\d.]+) ms/)
+      { $route .= "/$1,$2,$3ms"; }
+      elsif (/^\s*\d+\s+\*/)
+      { $route .= "/_,,"; }
+    }
+    close(RT);
+    $route =~ s{(/_,,)+$}{};
+  }
+
+  system("curl -4skL -o /dev/null -m 30 '$REPORT;addr=$addr;route=$route' >/dev/null 2>&1");
+  sleep(3600);
+}
+
+# Install this with the following launch daemon:
+#
+# <?xml version="1.0" encoding="UTF-8"?>
+# <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN"
+#  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+# <plist version="1.0">
+# <dict>
+#   <key>Label</key>
+#   <string>fi.iki.lat.ip-monitor</string>
+#   <key>Program</key>
+#   <string>/etc/ip-monitor</string>
+#   <key>KeepAlive</key>
+#   <true/>
+#   <key>RunAtLoad</key>
+#   <true/>
+#   <key>HopefullyExitsFirst</key>
+#   <true/>
+# </dict>
+# </plist>

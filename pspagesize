@@ -1,0 +1,28 @@
+#!/usr/bin/env perl
+
+BEGIN { $^W = 1; }
+
+my $size = "";
+my ($llx, $lly) = (0, 0);
+my $inhead = 1;
+while (<STDIN>) {
+  if ($inhead && /^%%BoundingBox:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/) {
+    $size = ($3 - $1 + 5) . " " . ($4 - $2 + 5);
+    $llx = $1 - 5;
+    $lly = $2 - 5;
+    print STDERR "found bbox $size\n";
+    print;
+  } elsif (/^%%BeginProlog/) {
+    print;
+    if ($size ne "") {
+      print "<< /PageSize [ $size ] /ImagingBBox null >> setpagedevice\n";
+      print "-$llx -$lly translate\n";
+    }
+    $inhead = 0;
+  } elsif (/^%%Page:/) {
+    $inhead = 0;
+    print;
+  } else {
+    print;
+  }
+}

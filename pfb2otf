@@ -1,0 +1,6 @@
+#!/usr/bin/env fontforge
+# http://typophile.com/node/37469
+Open($1);
+Reencode("unicode");
+Generate($fontname+".otf");
+Quit(0);

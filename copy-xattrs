@@ -1,0 +1,62 @@
+#!/usr/bin/env python2.5
+
+## Copy extended attributes from one directory tree to another.
+## Assumes the directory trees are similar, e.g. synchronised
+## with rsync.  Makes sure files in the destination tree have
+## the same extended attributes as the files in the source tree.
+import sys, os, os.path, xattr, stat
+
+# Check command line options
+if len(sys.argv) != 3:
+  print >> sys.stderr, "usage: %s src dest", sys.argv[0]
+  sys.exit(1)
+
+src = sys.argv[1]
+dest = sys.argv[2]
+
+# Get all extended attributes in the source tree first.  For symlinks
+# read the attributes on the link itself, not on the file the symlink
+# points to.  If attributes cannot be retrieved for a file (such as a
+# protected socket) skip the file; assume rsync already did the right
+# thing and the attributes aren't interesting enough to fail on.
+xa = {}
+for root, dirs, files in os.walk(src):
+  for f in dirs + files:
+    sfname = "%s/%s" % (root, f)
+    dfname = dest + sfname[len(src):]
+    try:
+      fxa = xattr.listxattr(sfname, True)
+      if len(fxa) > 0:
+        xa[dfname] = dict((a, xattr.getxattr(sfname, a, True)) for a in fxa)
+    except Exception, e:
+      print e
+
+# Now go over all the destination files, and compare the extended
+# attributes.  Update those extended attributes that differ.  Note
+# that if the file is write-protected, we need to first grant
+# ourselves the write privilege, make the change, then restore
+# the privileges to what they were.
+for dfname in sorted(xa.keys()):
+  if not os.path.lexists(dfname):
+    continue
+
+  try:
+    fxa = dict((a, xattr.getxattr(dfname, a, True)) for a in xattr.listxattr(dfname, True))
+    neq = [a for a in xa[dfname] if (a not in fxa or fxa[a] != xa[dfname][a])]
+    extra = [a for a in fxa if a not in xa[dfname]]
+    if len(neq) == 0 and len(extra) == 0:
+      continue
+  except Exception, e:
+    print e
+    continue
+
+  print "Adjusting %s: removing %s, updating %s" % (dfname, extra, neq)
+  oldmode = os.lstat(dfname).st_mode
+  if not stat.S_ISLNK(oldmode) and not oldmode & stat.S_IWUSR:
+    os.chmod(dfname, oldmode | stat.S_IWUSR) # FIXME: lchmod on python 2.6+
+  for fxa in extra:
+    xattr.removexattr(dfname, fxa, True)
+  for fxa in neq:
+    xattr.setxattr(dfname, fxa, xa[dfname][fxa], 0, True) 
+  if not stat.S_ISLNK(oldmode) and not oldmode & stat.S_IWUSR:
+    os.chmod(dfname, oldmode) # FIXME: lchmod on python 2.6+

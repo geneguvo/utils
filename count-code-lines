@@ -1,0 +1,6 @@
+#!/bin/sh
+
+cat ${1+"$@"} /dev/null |
+  perl -e 'undef $/; $x = <STDIN>; $x =~ s|//[^\n]*\n|\n|g;
+    $x =~ s|/\*[^*]*(\*[^/][^*]*)*\*/||g; print $x' |
+  sed '/^[ 	]*$/d; /^#/d' | wc -l

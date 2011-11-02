@@ -1,0 +1,25 @@
+#!/bin/sh
+
+if test $# -ne 1; then
+    echo "Usage: `basename $0 .sh` <process-id>" 1>&2
+    exit 1
+fi
+
+# Guess executable path from the process id.
+LSOF=${LSOF:-/usr/sbin/lsof}
+exe=$($LSOF -a -p $1 -d txt -Fn | grep '^n' | head -1 | sed 's/^n//')
+if test ! -x "$exe"; then
+    echo "No executable found for process $1." 1>&2
+    exit 1
+fi
+
+GDB=${GDB:-/usr/bin/gdb}
+
+# Run GDB, strip out unwanted noise.
+commands=$(mktemp /tmp/pstack.XXXXXX)
+if test ! -w $commands; then exit 1; fi
+trap 'rm -f $commands 2>/dev/null' 0 1 2 15
+
+echo "thread apply all where" > $commands
+$GDB --batch --command=$commands --quiet -nx "$exe" $1 < /dev/null 2>&1 | 
+  /usr/bin/sed -n -e 's/^(gdb) //' -e '/^#/p' -e '/^Thread/p'

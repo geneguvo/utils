@@ -1,0 +1,177 @@
+#!/usr/bin/env perl
+
+BEGIN { $^W = 1 }; 
+
+######################################################################
+# Slurp a mbox file and split it into messages at envelope boundaries,
+# and each message into headers and the body.
+sub readmbox {
+  my ($file) = @_;
+  my (%hdrs, $body, @msgs) = ();
+  my $empty = 1;
+  my $inhdr = undef;
+  my $line = undef;
+  open(FILE, "< $file") || die "$file: cannot open: $!\n";
+  
+  my $fmt = <FILE>;
+  if (! $fmt) {
+    return @msgs;
+  } elsif ($fmt =~ /^From /) {
+    # unix format, do nothing, read again from start
+    seek(FILE, 0, 0);
+  } elsif ($fmt =~ /\*mbx\*/) {
+    # mbx format, convert
+    close(FILE);
+    open(FILE, '-|') || exec("mbx2mbox", $file) || die "$file: cannot convert: $!\n";
+  } else {
+    die "$file: unrecognised file format\n";
+  }
+
+  while (<FILE>) {
+    chomp; s/\r$//;
+    if ($empty && /^From\s+\S+\s+\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+/) {
+      # Start a new envelope, save previous message
+      if (scalar keys %hdrs) {
+	push(@msgs, { FILE => $file, LINE => $line,
+		      HEADERS => { %hdrs }, BODY => $body });
+      }
+
+      %hdrs = (($inhdr = 'from ') => [ $_ ]);
+      $body = "";
+      $line = $.;
+    } elsif ($inhdr && /^(\S+:)/) {
+      # Add a new header
+      push(@{$hdrs{$inhdr = lc($1)}}, $_);
+    } elsif (($inhdr && /^\s/)
+    	     || ($inhdr
+	         && $inhdr eq 'from '
+		 && /^>From /)) {
+      # Continue previous header
+      my $hdr = pop(@{$hdrs{$inhdr}});
+      $hdr .= " $_";
+      push(@{$hdrs{$inhdr}}, $hdr);
+    } elsif ($inhdr && /^$/) {
+      # Start body
+      $inhdr = undef;
+      $empty = 1;
+    } else {
+      # Append to body
+      die "$file: $.: can't be in headers ($inhdr)\n" if $inhdr;
+      $body .= "$_\n";
+      $body .= "\n";
+      $empty = /^$/;
+    }
+  }
+  close (FILE);
+
+  # Save last message
+  if (scalar keys %hdrs) {
+    push(@msgs, { FILE => $file, LINE => $line,
+                  HEADERS => { %hdrs }, BODY => $body });
+  }
+
+  return @msgs;
+}
+
+sub dumphdrs {
+  my ($msg) = @_;
+  while (my ($key, $value) = each %{$msg->{HEADERS}}) {
+    print "<$key> --";
+    foreach my $val (@$value) { print " <$val>"; }
+    print "\n";
+  }
+}
+
+sub sortmbox {
+  my (@msgs) = @_;
+  my $mbox = {};
+  foreach my $msg (@msgs) {
+    my $msgid = $msg->{HEADERS}{"message-id:"}
+    		|| [ @{$msg->{HEADERS}{"date:"} || []},
+		     @{$msg->{HEADERS}{"subject:"} || []},
+		     @{$msg->{HEADERS}{"from:"} || []}];
+    my $id = lc(join(" ", @$msgid));
+    $id =~ s/\s+/ /g;
+    if (exists $mbox->{$id}) {
+      warn "* duplicate <$id> ($msg->{FILE}:$msg->{LINE})\n";
+      next;
+    }
+    $msg->{ID} = $id;
+    $mbox->{$id} = $msg;
+  }
+  return $mbox;
+}
+
+sub isdeleted {
+  my ($msg) = @_;
+  my $status = $msg->{HEADERS}{"x-status:"};
+  return 0 if (! $status || scalar @$status != 1);
+  return $status->[0] =~ /^[^:]+:.*D/;
+}
+
+sub diffmsg {
+  my ($msg1, $msg2) = @_;
+}
+
+sub msgid {
+  my ($msg) = @_;
+  my $idline = "";
+
+  my $xstatus = $msg->{HEADERS}{"x-status:"};
+  if ($xstatus && $xstatus->[0] =~ /^[^:]+:\s*(\S+)/) {
+    $idline .= $1;
+  }
+
+  my $date = $msg->{HEADERS}{"date:"};
+  if ($date && $date->[0] =~ /^[^:]+:\s*(\S+,\s+)?(\d+)\s+(\S+)\s+(\d+)/) {
+    my ($day, $mon, $year) = ($2, $3, $4);
+    my %months = (Jan => 1, Feb => 2, Mar => 3, Apr => 4, May => 5, Jun => 6,
+    		  Jul => 7, Aug => 8, Sep => 9, Oct => 10, Nov => 11, Dec => 12);
+    die "$mon: unrecognised month\n" if (! exists $months{$mon});
+    $idline .= sprintf("%04d-%02d-%02d ", $year, $months{$mon}, $day);
+  }
+
+  my $from = $msg->{HEADERS}{"from:"};
+  if ($from && $from->[0] =~ /^[^:]+:\s*(.*)/) {
+    $idline .= "<$1> ";
+  }
+
+  my $subject = $msg->{HEADERS}{"subject:"};
+  if ($subject && $subject->[0] =~ /^[^:]+:\s*(.*)/) {
+    $idline .= "<$1> ";
+  }
+
+  if (! $idline) {
+    $idline .= "<$msg->{ID}> ";
+  }
+  $idline .= "($msg->{FILE}:$msg->{LINE})";
+  return $idline;
+}
+
+sub diffmboxes {
+  my ($mbox1, $mbox2) = @_;
+  my @ids = keys %$mbox1;
+
+  foreach my $id (@ids) {
+    my $msg1 = $mbox1->{$id};
+    my $msg2 = $mbox2->{$id};
+
+    if (! $msg2) { # && ! &isdeleted($msg1);
+      print "- " . &msgid($msg1) . "\n"; # $msg1->{FILE}:$msg1->{LINE}: $id\n";
+    } else {
+      &diffmsg ($msg1, $msg2);
+      delete $mbox1->{$id};
+      delete $mbox2->{$id};
+    }
+  }
+
+  foreach my $id (keys %$mbox2) {
+    print "+ " . &msgid($mbox2->{$id}) . "\n"; # $mbox2->{$id}{FILE}:$mbox2->{$id}{LINE}: $id\n"; # if ! &isdeleted($mbox2->{$id});
+  }
+}
+
+if (scalar @ARGV != 2 || grep(! -r, @ARGV)) {
+  print "usage: $0 FILE1 FILE2\n";
+}
+
+&diffmboxes (&sortmbox(&readmbox($ARGV[0])), &sortmbox(&readmbox($ARGV[1])));

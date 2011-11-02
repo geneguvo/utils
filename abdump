@@ -1,0 +1,381 @@
+#!/usr/bin/env python
+
+import os, sys
+import sqlite3 as db
+sort_by_data = True
+
+# check we have the right number of arguments
+if len(sys.argv) != 2:
+  print >> sys.stderr, "usage: %s ADDRESS-BOOK-FILE" % sys.argv[0]
+  sys.exit(1)
+
+abfile = sys.argv[1]
+ab = db.connect(abfile)
+cur = ab.cursor()
+
+# Read main records. Use the "name" fields as a key for the record, as
+# the other fields (GUI, SQL keys) may vary from machine to machine.
+# But remember the SQL key to link back to the record.  While reading
+# the records classify them by type (person, group, ...).
+def read_records(cur):
+  keys = {}
+  groups = {}
+  records = {}
+  cur.execute("select * from ZABCDRECORD")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    if recdata['ZUNIQUEID'].find(":ABGroup") >= 0:
+      table = groups
+      keyname = recdata['ZNAME']
+    elif recdata['ZUNIQUEID'].find(":ABPerson") >= 0:
+      table = records
+      keyname = (recdata['ZLASTNAME'],
+                 recdata['ZFIRSTNAME'],
+                 recdata['ZORGANIZATION'])
+    elif recdata['ZUNIQUEID'].find(":ABSubscriptionRecord") >= 0:
+      pass
+    elif recdata['ZUNIQUEID'].find(":ABInfo") >= 0:
+      pass
+    else:
+      print >> sys.stderr, "unrecognised record: %s" % recdata
+      sys.exit(1)
+
+    recs = table.setdefault(keyname, [])
+    rec = {'data': recdata, 'keyname': keyname, 'emails': [], 'phones': [],
+           'ims': [], 'urls': [], 'related': [], 'addresses': [], 'notes': [],
+           'members': []}
+    recs.append(rec)
+    keys[recdata['Z_PK']] = rec
+  return (groups, records, keys)
+
+# Read the e-mail addresses.
+def read_emails(cur, reckeys):
+  cur.execute("select * from ZABCDEMAILADDRESS")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    parent = reckeys.get(recdata['ZOWNER'], None)
+    if not parent:
+      print >> sys.stderr, "no parent for record: %s" % recdata
+      sys.exit(1)
+    rec = { 'addr': recdata['ZADDRESS'],
+            'label': recdata['ZLABEL'].replace("_$!<", "").replace(">!$_", ""),
+            'primary': recdata['ZISPRIMARY'],
+            'index': recdata['ZORDERINGINDEX'],
+            'details': recdata }
+    parent['emails'].append(rec)
+
+# Read the im addresses.
+def read_ims(cur, reckeys):
+  svcs = {}
+  cur.execute("select * from ZABCDSERVICE")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    svcs[recdata['Z_PK']] = recdata['ZSERVICENAME']
+
+  cur.execute("select * from ZABCDMESSAGINGADDRESS")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    parent = reckeys.get(recdata['ZOWNER'], None)
+    if not parent:
+      print >> sys.stderr, "no parent for record: %s" % recdata
+      sys.exit(1)
+    rec = { 'addr': recdata['ZADDRESS'],
+            'service': svcs[recdata['ZSERVICE']],
+            'label': recdata['ZLABEL'].replace("_$!<", "").replace(">!$_", ""),
+            'primary': recdata['ZISPRIMARY'],
+            'index': recdata['ZORDERINGINDEX'],
+            'details': recdata }
+    parent['ims'].append(rec)
+
+# Read the phone numbers.
+def read_phones(cur, reckeys):
+  cur.execute("select * from ZABCDPHONENUMBER")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    parent = reckeys.get(recdata['ZOWNER'], None)
+    if not parent:
+      print >> sys.stderr, "no parent for record: %s" % recdata
+      sys.exit(1)
+    rec = { 'number': recdata['ZFULLNUMBER'],
+            'label': recdata['ZLABEL'].replace("_$!<", "").replace(">!$_", ""),
+            'primary': recdata['ZISPRIMARY'],
+            'index': recdata['ZORDERINGINDEX'],
+            'details': recdata }
+    parent['phones'].append(rec)
+
+# Read the URLs.
+def read_urls(cur, reckeys):
+  cur.execute("select * from ZABCDURLADDRESS")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    parent = reckeys.get(recdata['ZOWNER'], None)
+    if not parent:
+      print >> sys.stderr, "no parent for record: %s" % recdata
+      sys.exit(1)
+    rec = { 'url': recdata['ZURL'],
+            'label': recdata['ZLABEL'].replace("_$!<", "").replace(">!$_", ""),
+            'primary': recdata['ZISPRIMARY'],
+            'index': recdata['ZORDERINGINDEX'],
+            'details': recdata }
+    parent['urls'].append(rec)
+
+# Read the related people.
+def read_related(cur, reckeys):
+  cur.execute("select * from ZABCDRELATEDNAME")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    parent = reckeys.get(recdata['ZOWNER'], None)
+    if not parent:
+      print >> sys.stderr, "no parent for record: %s" % recdata
+      sys.exit(1)
+    rec = { 'name': recdata['ZNAME'],
+            'label': recdata['ZLABEL'].replace("_$!<", "").replace(">!$_", ""),
+            'primary': recdata['ZISPRIMARY'],
+            'index': recdata['ZORDERINGINDEX'],
+            'details': recdata }
+    parent['related'].append(rec)
+
+# Read the postal addresses.
+def read_addresses(cur, reckeys):
+  cur.execute("select * from ZABCDPOSTALADDRESS")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    parent = reckeys.get(recdata['ZOWNER'], None)
+    if not parent:
+      print >> sys.stderr, "no parent for record: %s" % recdata
+      sys.exit(1)
+    rec = { 'country': recdata['ZCOUNTRYNAME'],
+            'countrycode': recdata['ZCOUNTRYCODE'],
+            'state': recdata['ZSTATE'],
+            'zipcode': recdata['ZZIPCODE'],
+            'region': recdata['ZREGION'],
+            'city': recdata['ZCITY'],
+            'sama': recdata['ZSAMA'],
+            'street': recdata['ZSTREET'],
+            'label': recdata['ZLABEL'].replace("_$!<", "").replace(">!$_", ""),
+            'primary': recdata['ZISPRIMARY'],
+            'index': recdata['ZORDERINGINDEX'],
+            'details': recdata }
+    parent['addresses'].append(rec)
+
+# Read the notes.
+def read_notes(cur, reckeys):
+  cur.execute("select * from ZABCDNOTE")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    parent = reckeys.get(recdata['ZCONTACT'], None)
+    if not (recdata['ZTEXT'] or recdata['ZRICHTEXTDATA']):
+      continue
+    if not parent:
+      print >> sys.stderr, "no parent for record: %s" % recdata
+      sys.exit(1)
+    rec = { 'text': recdata['ZTEXT'],
+            'richtext': recdata['ZRICHTEXTDATA'],
+            'details': recdata }
+    parent['notes'].append(rec)
+
+# Read the group associations.
+def read_groupings(cur, reckeys):
+  cur.execute("select * from Z_19PARENTGROUPS")
+  columns = cur.description
+  for row in cur:
+    recdata = dict(zip([c[0] for c in columns], row))
+    reckeys[recdata['Z_15PARENTGROUPS1']]['members']\
+      .append(reckeys[recdata['Z_19CONTACTS']])
+
+(groups, records, reckeys) = read_records(cur)
+read_emails(cur, reckeys)
+read_phones(cur, reckeys)
+read_ims(cur, reckeys)
+read_urls(cur, reckeys)
+read_related(cur, reckeys)
+read_addresses(cur, reckeys)
+read_notes(cur, reckeys)
+read_groupings(cur, reckeys)
+
+def fmt_name(rec):
+  result = u""
+  if rec['ZNAME']:
+    result += (u"\n    name      %s" % rec['ZNAME'])
+  if rec['ZFIRSTNAME']:
+    result += (u"\n    first     %s" % rec['ZFIRSTNAME'])
+  if rec['ZMIDDLENAME']:
+    result += (u"\n    middle    %s" % rec['ZMIDDLENAME'])
+  if rec['ZLASTNAME']:
+    result += (u"\n    last      %s" % rec['ZLASTNAME'])
+  if rec['ZMAIDENNAME']:
+    result += (u"\n    maiden    %s" % rec['ZMAIDENNAME'])
+  if rec['ZORGANIZATION']:
+    result += (u"\n    org       %s" % rec['ZORGANIZATION'])
+  if rec['ZDEPARTMENT']:
+    result += (u"\n    dept      %s" % rec['ZDEPARTMENT'])
+  if rec['ZJOBTITLE']:
+    result += (u"\n    jobtitle  %s" % rec['ZJOBTITLE'])
+  return result
+
+def fmt_birthday(rec):
+  result = u""
+  if rec['ZBIRTHDAYYEAR']:
+    result += (u"\n    birthday  %s / %s"
+               % (rec['ZBIRTHDAYYEAR'],
+                  rec['ZBIRTHDAYYEARLESS']))
+  return result
+
+def fmt_emails(items):
+  result = u""
+  if sort_by_data:
+    for i in sorted(items, lambda a, b: cmp(a['addr'], b['addr'])):
+      result += (u"\n    e-mail    %s [#%d %s%s]"
+                 % (i['addr'], i['index'], i['label'],
+                    (i['primary'] and ' Primary') or ''))
+  else:
+    for i in sorted(items, lambda a, b: cmp(a['index'], b['index'])):
+      result += (u"\n    e-mail    #%d %s%s: %s"
+                 % (i['index'], i['label'],
+                    (i['primary'] and ' Primary') or '',
+                    i['addr']))
+  return result
+
+def fmt_ims(items):
+  result = u""
+  if sort_by_data:
+    for i in sorted(items, lambda a, b: cmp(a['addr'], b['addr'])):
+      result += (u"\n    im        %s (%s) [#%d %s%s]"
+                 % (i['addr'], i['service'], i['index'], i['label'],
+                    (i['primary'] and ' Primary') or ''))
+  else:
+    for i in sorted(items, lambda a, b: cmp(a['index'], b['index'])):
+      result += (u"\n    im        #%d %s%s: %s (%s)"
+                 % (i['index'], i['label'],
+                    (i['primary'] and ' Primary') or '',
+                    i['addr'], i['service']))
+  return result
+
+def fmt_phones(items):
+  result = u""
+  if sort_by_data:
+    for i in sorted(items, lambda a, b: cmp(a['number'], b['number'])):
+      result += (u"\n    phone     %s [#%d %s%s]"
+                 % (i['number'], i['index'], i['label'],
+                    (i['primary'] and ' Primary') or ''))
+  else:
+    for i in sorted(items, lambda a, b: cmp(a['index'], b['index'])):
+      result += (u"\n    phone     #%d %s%s: %s"
+                 % (i['index'], i['label'],
+                    (i['primary'] and ' Primary') or '',
+                    i['number']))
+  return result
+
+def fmt_urls(items):
+  result = u""
+  if sort_by_data:
+    for i in sorted(items, lambda a, b: cmp(a['url'], b['url'])):
+      result += (u"\n    url       %s [#%d %s%s]"
+                 % (i['url'], i['index'], i['label'],
+                    (i['primary'] and ' Primary') or ''))
+  else:
+    for i in sorted(items, lambda a, b: cmp(a['index'], b['index'])):
+      result += (u"\n    url       #%d %s%s: %s"
+                 % (i['index'], i['label'],
+                    (i['primary'] and ' Primary') or '',
+                    i['url']))
+  return result
+
+def fmt_related(items):
+  result = u""
+  if sort_by_data:
+    for i in sorted(items, lambda a, b: cmp(a['name'], b['name'])):
+      result += (u"\n    related   %s [#%d %s%s]"
+                 % (i['name'], i['index'], i['label'],
+                    (i['primary'] and ' Primary') or ''))
+  else:
+    for i in sorted(items, lambda a, b: cmp(a['index'], b['index'])):
+      result += (u"\n    related   #%d %s%s: %s"
+                 % (i['index'], i['label'],
+                    (i['primary'] and ' Primary') or '',
+                    i['name']))
+  return result
+
+def fmt_addresses(items):
+  result = u""
+  for i in sorted(items, lambda a, b: cmp(a['index'], b['index'])):
+    result += (u"\n    address   #%d %s%s:"
+               u"\n      country: %s; code: %s; state: %s; zip: %s"
+               u"\n      region: %s; city: %s; sama: %s; street: %s"
+               % (i['index'], i['label'],
+                  (i['primary'] and ' Primary') or '',
+                  i['country'], i['countrycode'],
+                  i['state'], i['zipcode'],
+                  i['region'], i['city'], i['sama'],
+                  (i['street'] or "None").replace("\n", "; ")))
+  return result
+
+def fmt_notes(items):
+  result = u""
+  for i in sorted(items, lambda a, b: cmp(a['index'], b['index'])):
+    lines = [u"\n    note"]
+    lines += i['text'].split("\n")
+    result += "\n      ".join(lines)
+  return result
+
+print "*** GROUPS:"
+for key, rec in sorted(groups.items()):
+  print (u"  %s:" % key).encode("utf-8")
+  for r in rec:
+    for m in sorted(r['members'], lambda a, b: cmp(a['keyname'], b['keyname'])):
+      print (u"    %s (%s)"
+             % (", ".join(k or "(None)" for k in m['keyname']),
+                m['data']['ZUNIQUEID'])).encode("utf-8")
+
+print "*** RECORDS:"
+for key, rec in sorted(records.items()):
+  for r in rec:
+    print (u"  %s (%s):%s%s%s%s%s%s%s%s%s"
+           % (", ".join(k or "(None)" for k in key),
+              r['data']['ZUNIQUEID'],
+              fmt_name(r['data']),
+              fmt_birthday(r['data']),
+              fmt_phones(r['phones']),
+              fmt_emails(r['emails']),
+              fmt_ims(r['ims']),
+              fmt_urls(r['urls']),
+              fmt_related(r['related']),
+              fmt_addresses(r['addresses']),
+              fmt_notes(r['notes']))).encode("utf-8")
+
+"""
+select * from ZABCDCONTACTINDEX;
+select * from ZABCDCUSTOMPROPERTY;
+select * from ZABCDDISTRIBUTIONLISTCONFIG;
+select * from ZABCDEMAILADDRESS;
+select * from ZABCDMESSAGINGADDRESS;
+select * from ZABCDNOTE;
+select * from ZABCDPHONENUMBER;
+select * from ZABCDPOSTALADDRESS;
+select * from ZABCDRECORD;
+select * from ZABCDRELATEDNAME;
+select * from ZABCDSERVICE;
+select * from ZABCDURLADDRESS;
+select * from Z_19PARENTGROUPS;
+select * from Z_METADATA;
+select * from Z_PRIMARYKEY;
+
+CREATE TABLE ZABCDCONTACTINDEX ( Z_PK INTEGER PRIMARY KEY, Z_ENT INTEGER, Z_OPT INTEGER, ZCONTACT INTEGER, Z19_CONTACT INTEGER, ZSTRINGFORINDEXING VARCHAR );
+
+CREATE TABLE ZABCDDISTRIBUTIONLISTCONFIG ( Z_PK INTEGER PRIMARY KEY, Z_ENT INTEGER, Z_OPT INTEGER, ZCONTACT INTEGER, Z19_CONTACT INTEGER, ZEMAIL INTEGER, ZGROUP INTEGER, Z15_GROUP INTEGER, ZPHONE INTEGER, ZADDRESS INTEGER, ZPROPERTYNAME VARCHAR );
+
+CREATE TABLE ZABCDRECORD ( Z_PK INTEGER PRIMARY KEY, Z_ENT INTEGER, Z_OPT INTEGER, ZDISPLAYFLAGS INTEGER, ZMODIFICATIONDATEYEAR INTEGER, ZCREATIONDATEYEAR INTEGER, ZADDRESSBOOKSOURCE INTEGER, ZISALL INTEGER, ZME INTEGER, Z19_ME INTEGER, ZINFO INTEGER, ZBIRTHDAYYEAR INTEGER, ZPRIVACYFLAGS INTEGER, ZNOTE INTEGER, ZADDRESSBOOKSOURCE1 INTEGER, ZCONTACTINDEX INTEGER, ZSOURCEWHERECONTACTISME INTEGER, ZVERSION INTEGER, ZSYNCCOUNT INTEGER, ZSHARECOUNT INTEGER, ZADDRESSBOOKSOURCE2 INTEGER, ZMODIFICATIONDATE TIMESTAMP, ZCREATIONDATE TIMESTAMP, ZMODIFICATIONDATEYEARLESS FLOAT, ZCREATIONDATEYEARLESS FLOAT, ZBIRTHDAY TIMESTAMP, ZBIRTHDAYYEARLESS FLOAT, ZUNIQUEID VARCHAR, ZNAME VARCHAR, ZNAMENORMALIZED VARCHAR, ZTMPREMOTELOCATION VARCHAR, ZNAME1 VARCHAR, ZREMOTELOCATION VARCHAR, ZSERIALNUMBER VARCHAR, ZSUFFIX VARCHAR, ZTITLE VARCHAR, ZTMPHOMEPAGE VARCHAR, ZNICKNAME VARCHAR, ZORGANIZATION VARCHAR, ZMAIDENNAME VARCHAR, ZIDENTITYUNIQUEID VARCHAR, ZPHONETICFIRSTNAME VARCHAR, ZDEPARTMENT VARCHAR, ZPHONETICLASTNAME VARCHAR, ZMIDDLENAME VARCHAR, ZFIRSTNAME VARCHAR, ZIMAGEREFERENCE VARCHAR, ZJOBTITLE VARCHAR, ZPHONETICMIDDLENAME VARCHAR, ZLASTNAME VARCHAR, ZSORTINGFIRSTNAME VARCHAR, ZSORTINGLASTNAME VARCHAR, ZCREATEDVERSION VARCHAR, ZLASTDOTMACACCOUNT VARCHAR, ZLASTSAVEDVERSION VARCHAR, ZSYNCANCHOR VARCHAR, ZSEARCHELEMENTDATA BLOB, ZMODIFIEDUNIQUEIDSDATA BLOB );
+
+CREATE TABLE Z_19PARENTGROUPS ( Z_19CONTACTS, Z_15PARENTGROUPS1 );
+
+CREATE TABLE Z_PRIMARYKEY (Z_ENT INTEGER PRIMARY KEY, Z_NAME VARCHAR, Z_SUPER INTEGER, Z_MAX INTEGER);
+"""

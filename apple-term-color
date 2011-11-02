@@ -1,0 +1,16 @@
+#!/bin/sh
+
+color="65535,65535,65535,65535"
+case ${1-white} in
+  white  ) color="65535,65535,65535,65535" ;;
+  yellow ) color="64507,65535,53199,65535" ;;
+  green  ) color="55255,65535,54741,65535" ;;
+  blue   ) color="57825,60395,65535,65535" ;;
+  red    ) color="65535,56283,64250,65535" ;;
+  gray   ) color="57825,57825,57825,65535" ;;
+  *      ) ;;
+esac
+
+cmd="tell front window of app \"Terminal\" to"
+cmd="$cmd set background color to {$color}"
+osascript -e "$cmd"

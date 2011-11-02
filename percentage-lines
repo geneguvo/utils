@@ -1,0 +1,12 @@
+#!/usr/bin/env perl
+
+$sum = 0;
+while (<STDIN>) {
+  my @items = split;
+  $sum += $items[0];
+  push(@lines, [ @items ]);
+}
+foreach $l (@lines) {
+  ($n, @rest) = @$l;
+  print sprintf ("%d\t%5.1f%%\t%s\n", $n, $n*100.0/$sum, join ("\t", @rest));
+}
