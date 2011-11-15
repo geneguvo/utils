@@ -1,0 +1,40 @@
+#compdef stg
+
+local context state line ret=1
+typeset -A opt_args
+typeset -a subcmds
+subcmds=( ${${${(M)${(f)"$(stg help 2> /dev/null)"}## *}#  }/#(#b)([^[:space:]]##)[[:space:]]##(*)/$match[1]:$match[2]} )
+
+_arguments -C '1: :->cmds' '*: :->args' && ret=0
+case $state in
+  (cmds)
+    _describe -t commands 'stgit command' subcmds && ret=0
+    ;;
+
+  (args)
+    case $line[1] in
+      (push)
+        _wanted -V "unapplied patches" expl "patch" \
+         compadd ${${(M)${(f)"$(stg series 2> /dev/null)"}##- *}#- } \
+         && ret=0
+        ;;
+
+     (pop)
+       _wanted -V "applied patches" expl "patch" \
+        compadd ${${(M)${(f)"$(stg series 2> /dev/null)"}##[+>] *}#[+>] } \
+        && ret=0
+       ;;
+
+     (edit|files|goto|rename|log|float|delete|sink|mail|sync|show|pick|hide)
+       _wanted -V "patches" expl "patch" \
+        compadd $(stg series --noprefix 2> /dev/null) \
+        && ret=0
+       ;;
+
+     (*)
+       _files
+       ;;
+   esac
+esac
+
+return ret
